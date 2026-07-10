@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Backtest Chart Viewer</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#151b23; --border:#232b36; --grid:#1c232d;
+    --text:#c9d1d9; --text-dim:#6e7681;
+    --up:#26a69a; --down:#ef5350;
+    --entry:#3b82f6; --tp:#22c55e; --sl:#ef4444;
+    --accent:#e8a33d;
+    --mono: ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:var(--mono);}
+  #app{display:flex;flex-direction:column;height:100vh;}
+
+  header{
+    display:flex;align-items:center;gap:14px;padding:10px 16px;
+    background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap;
+  }
+  header h1{font-size:13px;font-weight:600;letter-spacing:.04em;color:var(--text-dim);text-transform:uppercase;margin:0;margin-right:8px;}
+  .upload-group{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);}
+  .upload-group label.filebtn{
+    background:#1e2733;border:1px solid var(--border);color:var(--text);
+    padding:5px 10px;border-radius:4px;cursor:pointer;font-size:12px;
+  }
+  .upload-group label.filebtn:hover{border-color:var(--accent);}
+  .upload-group input[type=file]{display:none;}
+  .status-dot{width:7px;height:7px;border-radius:50%;background:#3a4453;display:inline-block;margin-right:4px;}
+  .status-dot.ok{background:var(--up);}
+  .spacer{flex:1;}
+  .stats{font-size:11px;color:var(--text-dim);display:flex;gap:16px;}
+  .stats b{color:var(--text);}
+  .legend{display:flex;gap:14px;font-size:11px;color:var(--text-dim);align-items:center;}
+  .legend .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px;}
+
+  #chartWrap{position:relative;flex:1;overflow:hidden;}
+  canvas{display:block;width:100%;height:100%;}
+
+  #hint{
+    position:absolute;top:10px;left:16px;font-size:11px;color:var(--text-dim);
+    background:rgba(21,27,35,.85);padding:6px 10px;border-radius:4px;border:1px solid var(--border);
+    pointer-events:none;
+  }
+  #ohlcInfo{
+    position:absolute;top:42px;left:16px;font-size:12px;color:var(--text);
+    background:rgba(21,27,35,.9);padding:6px 12px;border-radius:4px;border:1px solid var(--border);
+    pointer-events:none;display:none;white-space:nowrap;font-family:var(--mono);
+  }
+  #ohlcInfo b{color:var(--text-dim);font-weight:600;margin-right:3px;}
+  #ohlcInfo .up{color:var(--up);} #ohlcInfo .down{color:var(--down);}
+  #ohlcInfo .sep{color:var(--border);margin:0 8px;}
+  #emptyState{
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;gap:10px;color:var(--text-dim);font-size:13px;text-align:center;
+  }
+  #emptyState .big{font-size:16px;color:var(--text);}
+  #tooltip{
+    position:absolute;pointer-events:none;background:#1c2530;border:1px solid var(--border);
+    border-radius:5px;padding:8px 10px;font-size:11px;line-height:1.6;color:var(--text);
+    display:none;z-index:5;box-shadow:0 4px 14px rgba(0,0,0,.4);white-space:nowrap;
+  }
+  #tooltip .row b{color:var(--accent);}
+  #tooltip .buy{color:var(--up);} #tooltip .sell{color:var(--down);}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Backtest Chart Viewer</h1>
+
+    <div class="upload-group">
+      <span class="status-dot" id="dotCandles"></span>Candles CSV
+      <label class="filebtn">Upload<input type="file" id="fileCandles" accept=".csv"></label>
+    </div>
+    <div class="upload-group">
+      <span class="status-dot" id="dotTrades"></span>Trades CSV
+      <label class="filebtn">Upload<input type="file" id="fileTrades" accept=".csv"></label>
+    </div>
+
+    <div class="legend">
+      <span><span class="sw" style="background:var(--up)"></span>Bull candle</span>
+      <span><span class="sw" style="background:var(--down)"></span>Bear candle</span>
+      <span><span class="sw" style="background:var(--up);border-radius:50%"></span>Buy entry</span>
+      <span><span class="sw" style="background:var(--down);border-radius:50%"></span>Sell entry</span>
+      <span><span class="sw" style="background:var(--entry)"></span>Entry</span>
+      <span><span class="sw" style="background:var(--tp)"></span>TP</span>
+      <span><span class="sw" style="background:var(--sl)"></span>SL</span>
+    </div>
+
+    <div class="upload-group" id="gotoGroup" style="display:none;">
+      Go to
+      <input type="datetime-local" id="gotoInput" step="60"
+        style="background:#1e2733;border:1px solid var(--border);color:var(--text);padding:4px 6px;border-radius:4px;font-family:var(--mono);font-size:12px;">
+      <button id="gotoBtn" class="filebtn" style="border:1px solid var(--border);">Jump</button>
+    </div>
+
+    <div class="spacer"></div>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <div id="chartWrap">
+    <canvas id="chart"></canvas>
+    <div id="hint">Scroll = zoom time &nbsp;·&nbsp; Drag chart = pan &nbsp;·&nbsp; Drag price axis = zoom price &nbsp;·&nbsp; Drag time axis = zoom time</div>
+    <div id="ohlcInfo"></div>
+    <div id="tooltip"></div>
+    <div id="emptyState">
+      <div class="big">No candle data loaded</div>
+      <div>Upload your candle CSV (time, open, high, low, close) using the button above.<br>Then upload the trades CSV to overlay buy/sell markers and entry/SL/TP levels.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  //================= STATE =================
+  let candles = [];         // {t: epochMs, o,h,l,c}
+  let candleIndexByT = new Map();
+  let trades = [];          // parsed trade rows with entryIdx/exitIdx resolved
+  let tradesByEntryIdx = new Map(); // idx -> [trades]
+
+  let viewStart = 0;        // first visible candle index (float allowed for smooth pan)
+  let viewCount = 150;      // visible candle count
+  let yOffset = 0;          // manual price offset (price units)
+  let yZoom = 1;             // manual price zoom multiplier (1 = auto-fit)
+
+  const PAD_RIGHT = 74;     // price axis width
+  const PAD_BOTTOM = 28;    // time axis height
+  const PAD_TOP = 10;
+  const PAD_LEFT = 6;
+
+  let mouse = {x:null, y:null, inChart:false};
+  let drag = null;          // {mode, startX, startY, startViewStart, startYOffset, startYZoom, startViewCount}
+
+  const canvas = document.getElementById('chart');
+  const ctx = canvas.getContext('2d');
+  const wrap = document.getElementById('chartWrap');
+  const tooltip = document.getElementById('tooltip');
+  const emptyState = document.getElementById('emptyState');
+  const statsEl = document.getElementById('stats');
+
+  //================= CSV PARSING =================
+  function parseCSV(text){
+    const lines = text.replace(/\r/g,'').split('\n').filter(l => l.trim().length>0);
+    if(lines.length===0) return {header:[], rows:[]};
+    const header = lines[0].split(',').map(s=>s.trim().toLowerCase());
+    const rows = [];
+    for(let i=1;i<lines.length;i++){
+      const parts = lines[i].split(',');
+      const row = {};
+      for(let j=0;j<header.length;j++) row[header[j]] = parts[j] !== undefined ? parts[j].trim() : '';
+      rows.push(row);
+    }
+    return {header, rows};
+  }
+
+  function toEpochMs(s){
+    if(!s) return NaN;
+    let str = s.trim();
+    if(str.indexOf('T') === -1) str = str.replace(' ','T');
+    if(!/Z$/.test(str) && !/[+\-]\d\d:\d\d$/.test(str)) str += 'Z';
+    const ms = Date.parse(str);
+    return ms;
+  }
+
+  function loadCandlesFromText(text){
+    const {rows} = parseCSV(text);
+    const out = [];
+    for(const r of rows){
+      const t = toEpochMs(r.time || r.datetime);
+      const o = parseFloat(r.open), h = parseFloat(r.high), l = parseFloat(r.low), c = parseFloat(r.close);
+      if(!isFinite(t) || !isFinite(o) || !isFinite(h) || !isFinite(l) || !isFinite(c)) continue;
+      out.push({t,o,h,l,c});
+    }
+    out.sort((a,b)=>a.t-b.t);
+    candles = out;
+    candleIndexByT = new Map();
+    candles.forEach((cd,i)=>candleIndexByT.set(cd.t,i));
+    viewCount = Math.min(150, candles.length || 150);
+    viewStart = Math.max(0, candles.length - viewCount);
+    yOffset = 0; yZoom = 1;
+    resolveTradeIndices();
+    document.getElementById('dotCandles').classList.add('ok');
+    emptyState.style.display = candles.length ? 'none' : 'flex';
+    updateStats();
+    setupGotoRange();
+    draw();
+  }
+
+  function loadTradesFromText(text){
+    const {rows} = parseCSV(text);
+    const out = [];
+    for(const r of rows){
+      out.push({
+        no: r.trade_no || r.no || '',
+        entryT: toEpochMs(r.entry_time),
+        exitT: toEpochMs(r.exit_time),
+        dir: (r.direction||'').toUpperCase(),
+        entry: parseFloat(r.entry),
+        sl: parseFloat(r.sl),
+        tp: parseFloat(r.tp),
+        exitPrice: parseFloat(r.exit_price),
+        pnl: parseFloat(r.pnl),
+        result: r.result || '',
+        critical: (r.critical||'').toString().toLowerCase()==='true'
+      });
+    }
+    trades = out;
+    resolveTradeIndices();
+    document.getElementById('dotTrades').classList.add('ok');
+    updateStats();
+    draw();
+  }
+
+  function resolveTradeIndices(){
+    tradesByEntryIdx = new Map();
+    if(!candles.length || !trades.length) return;
+    for(const tr of trades){
+      let idx = candleIndexByT.get(tr.entryT);
+      if(idx === undefined){
+        // fallback: nearest candle at/after entry time
+        idx = nearestIndexForTime(tr.entryT);
+      }
+      tr.entryIdx = idx;
+      let exitIdx = candleIndexByT.get(tr.exitT);
+      if(exitIdx === undefined) exitIdx = nearestIndexForTime(tr.exitT);
+      tr.exitIdx = exitIdx;
+      if(idx === undefined || idx === null || idx < 0) continue;
+      if(!tradesByEntryIdx.has(idx)) tradesByEntryIdx.set(idx, []);
+      tradesByEntryIdx.get(idx).push(tr);
+    }
+  }
+
+  function nearestIndexForTime(ms){
+    if(!isFinite(ms) || !candles.length) return null;
+    let lo=0, hi=candles.length-1;
+    if(ms <= candles[0].t) return 0;
+    if(ms >= candles[hi].t) return hi;
+    while(lo < hi){
+      const mid = (lo+hi)>>1;
+      if(candles[mid].t < ms) lo = mid+1; else hi = mid;
+    }
+    return lo;
+  }
+
+  function updateStats(){
+    let html = '';
+    if(candles.length){
+      html += `<span><b>${candles.length.toLocaleString()}</b> candles</span>`;
+      html += `<span><b>${new Date(candles[0].t).toISOString().slice(0,16).replace('T',' ')}</b> → <b>${new Date(candles[candles.length-1].t).toISOString().slice(0,16).replace('T',' ')}</b></span>`;
+    }
+    if(trades.length){
+      html += `<span><b>${trades.length.toLocaleString()}</b> trades</span>`;
+    }
+    statsEl.innerHTML = html;
+  }
+
+  //================= FILE INPUTS =================
+  document.getElementById('fileCandles').addEventListener('change', e=>{
+    const f = e.target.files[0]; if(!f) return;
+    const rd = new FileReader();
+    rd.onload = ev => loadCandlesFromText(ev.target.result);
+    rd.readAsText(f);
+  });
+  document.getElementById('fileTrades').addEventListener('change', e=>{
+    const f = e.target.files[0]; if(!f) return;
+    const rd = new FileReader();
+    rd.onload = ev => loadTradesFromText(ev.target.result);
+    rd.readAsText(f);
+  });
+
+  // try a best-effort silent auto-load from same folder (works if served over http, silently fails on file://)
+  ['COINBASE_BTCUSD__NORMAL_CANDLE.csv','COINBASE_BTCUSD, NORMAL CANDLE.csv','data.csv']
+    .forEach(name=>{
+      fetch(name).then(r=>{ if(r.ok) return r.text(); throw 0; }).then(loadCandlesFromText).catch(()=>{});
+    });
+  ['backtest_trades_report.csv','trades.csv'].forEach(name=>{
+    fetch(name).then(r=>{ if(r.ok) return r.text(); throw 0; }).then(loadTradesFromText).catch(()=>{});
+  });
+
+  //================= LAYOUT / SCALES =================
+  function resize(){
+    const rect = wrap.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width*dpr;
+    canvas.height = rect.height*dpr;
+    canvas.style.width = rect.width+'px';
+    canvas.style.height = rect.height+'px';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    draw();
+  }
+  window.addEventListener('resize', resize);
+  new ResizeObserver(()=>resize()).observe(wrap);
+
+  function plotWidth(){ return canvas.clientWidth - PAD_RIGHT - PAD_LEFT; }
+  function plotHeight(){ return canvas.clientHeight - PAD_BOTTOM - PAD_TOP; }
+
+  function visibleRange(){
+    let s = Math.max(0, Math.floor(viewStart));
+    let e = Math.min(candles.length, Math.ceil(viewStart + viewCount));
+    return [s,e];
+  }
+
+  function priceRangeForView(){
+    const [s,e] = visibleRange();
+    if(e<=s) return [0,1];
+    let lo=Infinity, hi=-Infinity;
+    for(let i=s;i<e;i++){ if(candles[i].l<lo) lo=candles[i].l; if(candles[i].h>hi) hi=candles[i].h; }
+    if(!isFinite(lo)||!isFinite(hi)) return [0,1];
+    const pad = (hi-lo)*0.12 || 1;
+    lo -= pad; hi += pad;
+    const mid = (lo+hi)/2;
+    const half = (hi-lo)/2/yZoom;
+    return [mid-half+yOffset, mid+half+yOffset];
+  }
+
+  function xForIndex(i){
+    const [s] = visibleRange();
+    const w = plotWidth();
+    const cw = w/viewCount;
+    return PAD_LEFT + (i - viewStart)*cw;
+  }
+  function candleWidthPx(){ return plotWidth()/viewCount; }
+
+  function yForPrice(p, priceMin, priceMax){
+    const h = plotHeight();
+    const t = (p - priceMin)/(priceMax-priceMin);
+    return PAD_TOP + h*(1-t);
+  }
+  function priceForY(y, priceMin, priceMax){
+    const h = plotHeight();
+    const t = 1-(y-PAD_TOP)/h;
+    return priceMin + t*(priceMax-priceMin);
+  }
+  function indexForX(x){
+    const cw = candleWidthPx();
+    return viewStart + (x-PAD_LEFT)/cw;
+  }
+
+  //================= NICE TICKS =================
+  function niceStep(range, targetCount){
+    const raw = range/targetCount;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw/mag;
+    let step;
+    if(norm<1.5) step=1; else if(norm<3) step=2; else if(norm<7) step=5; else step=10;
+    return step*mag;
+  }
+
+  function fmtTime(ms){
+    const d = new Date(ms);
+    const pad = n=>String(n).padStart(2,'0');
+    return {
+      date: `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}`,
+      time: `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
+    };
+  }
+
+  //================= DRAW =================
+  function draw(){
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    ctx.clearRect(0,0,W,H);
+    if(!candles.length) return;
+
+    const [priceMin, priceMax] = priceRangeForView();
+    const [s,e] = visibleRange();
+    const cw = candleWidthPx();
+
+    // ---- grid ----
+    ctx.strokeStyle = '#1c232d';
+    ctx.lineWidth = 1;
+    ctx.font = '11px ui-monospace, monospace';
+
+    // horizontal price grid + labels
+    const priceStep = niceStep(priceMax-priceMin, 6);
+    const firstLine = Math.ceil(priceMin/priceStep)*priceStep;
+    ctx.fillStyle = '#6e7681';
+    for(let p=firstLine; p<priceMax; p+=priceStep){
+      const y = yForPrice(p, priceMin, priceMax);
+      ctx.beginPath(); ctx.moveTo(PAD_LEFT,y); ctx.lineTo(W-PAD_RIGHT,y); ctx.stroke();
+      ctx.fillText(p.toFixed(1), W-PAD_RIGHT+8, y+3);
+    }
+
+    // vertical time grid + labels
+    const targetTicks = Math.max(3, Math.floor(plotWidth()/110));
+    const idxStep = Math.max(1, Math.round(viewCount/targetTicks));
+    let lastLabelDate = '';
+    for(let i=Math.ceil(s/idxStep)*idxStep; i<e; i+=idxStep){
+      const x = xForIndex(i)+cw/2;
+      ctx.beginPath(); ctx.moveTo(x,PAD_TOP); ctx.lineTo(x,H-PAD_BOTTOM); ctx.stroke();
+      const {date,time} = fmtTime(candles[i].t);
+      ctx.fillStyle = '#6e7681';
+      if(date!==lastLabelDate){
+        ctx.fillText(date, x-30, H-PAD_BOTTOM+22);
+        lastLabelDate = date;
+      }
+      ctx.fillText(time, x-16, H-PAD_BOTTOM+10);
+    }
+
+    // ---- candles ----
+    const bodyW = Math.max(1, cw*0.62);
+    for(let i=s;i<e;i++){
+      const cd = candles[i];
+      const x = xForIndex(i)+cw/2;
+      const up = cd.c>=cd.o;
+      ctx.strokeStyle = up? '#26a69a':'#ef5350';
+      ctx.fillStyle = up? '#26a69a':'#ef5350';
+      const yH = yForPrice(cd.h,priceMin,priceMax);
+      const yL = yForPrice(cd.l,priceMin,priceMax);
+      const yO = yForPrice(cd.o,priceMin,priceMax);
+      const yC = yForPrice(cd.c,priceMin,priceMax);
+      ctx.beginPath(); ctx.moveTo(x,yH); ctx.lineTo(x,yL); ctx.lineWidth=1; ctx.stroke();
+      const top = Math.min(yO,yC), h = Math.max(1,Math.abs(yC-yO));
+      ctx.fillRect(x-bodyW/2, top, bodyW, h);
+    }
+
+    // ---- trade overlays (entry/sl/tp short lines + buy/sell dots) ----
+    const lineSpanCandles = 2; // lines drawn across ~2 candles
+    for(let i=s;i<e;i++){
+      const list = tradesByEntryIdx.get(i);
+      if(!list) continue;
+      for(const tr of list){
+        const x0 = xForIndex(i);
+        const x1 = xForIndex(Math.min(i+lineSpanCandles, candles.length));
+        const yE = yForPrice(tr.entry, priceMin, priceMax);
+        const ySl = yForPrice(tr.sl, priceMin, priceMax);
+        const yTp = yForPrice(tr.tp, priceMin, priceMax);
+
+        drawLevelLine(x0,x1,yE,'#3b82f6');
+        drawLevelLine(x0,x1,yTp,'#22c55e');
+        drawLevelLine(x0,x1,ySl,'#ef4444');
+
+        // dot marker
+        const cx = x0 + cw/2;
+        const isBuy = tr.dir === 'BUY';
+        const cd = candles[i];
+        const dotY = isBuy
+          ? yForPrice(cd.l, priceMin, priceMax) + 12
+          : yForPrice(cd.h, priceMin, priceMax) - 12;
+        ctx.beginPath();
+        ctx.fillStyle = isBuy ? '#26a69a' : '#ef5350';
+        ctx.arc(cx, dotY, 4.5, 0, Math.PI*2);
+        ctx.fill();
+
+        // trade number label
+        ctx.font = 'bold 10px ui-monospace, monospace';
+        ctx.fillStyle = isBuy ? '#26a69a' : '#ef5350';
+        ctx.textAlign = 'center';
+        ctx.fillText('#'+tr.no, cx, isBuy ? dotY+15 : dotY-9);
+        ctx.textAlign = 'left';
+      }
+    }
+
+    // ---- crosshair ----
+    if(mouse.inChart && mouse.x!==null){
+      ctx.strokeStyle = '#4b5563';
+      ctx.setLineDash([4,4]);
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(mouse.x,PAD_TOP); ctx.lineTo(mouse.x,H-PAD_BOTTOM); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(PAD_LEFT,mouse.y); ctx.lineTo(W-PAD_RIGHT,mouse.y); ctx.stroke();
+      ctx.setLineDash([]);
+
+      // price label box (right axis)
+      const p = priceForY(mouse.y, priceMin, priceMax);
+      ctx.fillStyle = '#e8a33d';
+      ctx.fillRect(W-PAD_RIGHT, mouse.y-9, PAD_RIGHT, 18);
+      ctx.fillStyle = '#0d1117';
+      ctx.font = 'bold 11px ui-monospace, monospace';
+      ctx.fillText(p.toFixed(2), W-PAD_RIGHT+6, mouse.y+4);
+
+      // time label box (bottom axis)
+      const idx = Math.round(indexForX(mouse.x));
+      if(idx>=0 && idx<candles.length){
+        const {date,time} = fmtTime(candles[idx].t);
+        const label = date+' '+time;
+        ctx.font = 'bold 11px ui-monospace, monospace';
+        const tw = ctx.measureText(label).width+12;
+        ctx.fillStyle = '#e8a33d';
+        ctx.fillRect(Math.min(Math.max(mouse.x-tw/2,PAD_LEFT),W-PAD_RIGHT-tw), H-PAD_BOTTOM, tw, 20);
+        ctx.fillStyle = '#0d1117';
+        ctx.fillText(label, Math.min(Math.max(mouse.x-tw/2,PAD_LEFT),W-PAD_RIGHT-tw)+6, H-PAD_BOTTOM+14);
+      }
+    }
+
+    // border
+    ctx.strokeStyle = '#232b36';
+    ctx.strokeRect(PAD_LEFT,PAD_TOP, W-PAD_RIGHT-PAD_LEFT, H-PAD_BOTTOM-PAD_TOP);
+  }
+
+  function drawLevelLine(x0,x1,y,color){
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke();
+  }
+
+  //================= INTERACTION =================
+  function zoneAt(x,y){
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    if(x > W-PAD_RIGHT) return 'priceaxis';
+    if(y > H-PAD_BOTTOM) return 'timeaxis';
+    return 'main';
+  }
+
+  canvas.addEventListener('mousedown', e=>{
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX-rect.left, y = e.clientY-rect.top;
+    drag = {
+      mode: zoneAt(x,y), startX:x, startY:y,
+      startViewStart:viewStart, startViewCount:viewCount,
+      startYOffset:yOffset, startYZoom:yZoom
+    };
+  });
+
+  window.addEventListener('mousemove', e=>{
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX-rect.left, y = e.clientY-rect.top;
+    mouse.inChart = x>=0 && x<=rect.width && y>=0 && y<=rect.height;
+    mouse.x = x; mouse.y = y;
+
+    if(drag && candles.length){
+      const [priceMin, priceMax] = priceRangeForView();
+      if(drag.mode==='main'){
+        const dx = x-drag.startX;
+        const cw = candleWidthPx();
+        viewStart = drag.startViewStart - dx/cw;
+        viewStart = Math.max(-viewCount*0.4, Math.min(candles.length-viewCount*0.6, viewStart));
+
+        const dy = y-drag.startY;
+        const pxToPrice = (priceMax-priceMin)/plotHeight();
+        yOffset = drag.startYOffset + dy*pxToPrice;
+      } else if(drag.mode==='priceaxis'){
+        const dy = y-drag.startY;
+        const factor = Math.exp(dy*0.005);
+        yZoom = Math.max(0.05, Math.min(50, drag.startYZoom*factor));
+      } else if(drag.mode==='timeaxis'){
+        const dx = x-drag.startX;
+        const factor = Math.exp(-dx*0.006);
+        viewCount = Math.max(10, Math.min(candles.length||5000, drag.startViewCount*factor));
+      }
+      draw();
+      updateOHLCInfo(x,y);
+    } else {
+      showTooltip(x,y);
+      updateOHLCInfo(x,y);
+      draw();
+    }
+  });
+
+  window.addEventListener('mouseup', ()=>{ drag=null; });
+  canvas.addEventListener('mouseleave', ()=>{ mouse.inChart=false; tooltip.style.display='none'; document.getElementById('ohlcInfo').style.display='none'; draw(); });
+
+  canvas.addEventListener('wheel', e=>{
+    if(!candles.length) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX-rect.left;
+    const zone = zoneAt(x, e.clientY-rect.top);
+    const idxAtCursor = indexForX(x);
+
+    if(zone==='priceaxis'){
+      const factor = e.deltaY>0 ? 0.9 : 1.1;
+      yZoom = Math.max(0.05, Math.min(50, yZoom*factor));
+    } else {
+      const factor = e.deltaY>0 ? 1.12 : 0.89;
+      const newCount = Math.max(10, Math.min(candles.length, viewCount*factor));
+      // keep candle under cursor fixed
+      const ratio = (idxAtCursor - viewStart)/viewCount;
+      viewStart = idxAtCursor - ratio*newCount;
+      viewCount = newCount;
+    }
+    draw();
+  }, {passive:false});
+
+  function showTooltip(x,y){
+    if(!candles.length){ tooltip.style.display='none'; return; }
+    if(y > canvas.clientHeight-PAD_BOTTOM || x > canvas.clientWidth-PAD_RIGHT){ tooltip.style.display='none'; return; }
+    const idx = Math.round(indexForX(x));
+    if(idx<0 || idx>=candles.length){ tooltip.style.display='none'; return; }
+    const list = tradesByEntryIdx.get(idx);
+    if(!list || !list.length){ tooltip.style.display='none'; return; }
+    const tr = list[0];
+    const cls = tr.dir==='BUY' ? 'buy':'sell';
+    tooltip.innerHTML =
+      `<div class="row"><b>#${tr.no}</b> <span class="${cls}">${tr.dir}</span> — ${tr.result}${tr.critical?' (critical)':''}</div>`+
+      `<div class="row">Entry: ${tr.entry.toFixed(2)}  SL: ${tr.sl.toFixed(2)}  TP: ${tr.tp.toFixed(2)}</div>`+
+      `<div class="row">Exit: ${tr.exitPrice.toFixed(2)}  PnL: ${tr.pnl.toFixed(2)}</div>`;
+    tooltip.style.left = (x+16)+'px';
+    tooltip.style.top = (y+16)+'px';
+    tooltip.style.display = 'block';
+  }
+
+  function updateOHLCInfo(x,y){
+    const el = document.getElementById('ohlcInfo');
+    if(!candles.length){ el.style.display='none'; return; }
+    if(y > canvas.clientHeight-PAD_BOTTOM || x > canvas.clientWidth-PAD_RIGHT || x < PAD_LEFT || y < PAD_TOP){
+      el.style.display='none'; return;
+    }
+    const idx = Math.round(indexForX(x));
+    if(idx<0 || idx>=candles.length){ el.style.display='none'; return; }
+    const cd = candles[idx];
+    const up = cd.c >= cd.o;
+    const chg = cd.c - cd.o;
+    const chgPct = (chg/cd.o)*100;
+    const cls = up ? 'up' : 'down';
+    const sign = chg>=0 ? '+' : '';
+    el.innerHTML =
+      `<b>O</b>${cd.o.toFixed(2)}<span class="sep">|</span>`+
+      `<b>H</b>${cd.h.toFixed(2)}<span class="sep">|</span>`+
+      `<b>L</b>${cd.l.toFixed(2)}<span class="sep">|</span>`+
+      `<b>C</b>${cd.c.toFixed(2)}<span class="sep">|</span>`+
+      `<span class="${cls}">${sign}${chg.toFixed(2)} (${sign}${chgPct.toFixed(2)}%)</span>`;
+    el.style.display = 'block';
+  }
+
+  //================= GO TO DATE/TIME =================
+  function toDatetimeLocalStr(ms){
+    const d = new Date(ms);
+    const pad = n=>String(n).padStart(2,'0');
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  }
+
+  function setupGotoRange(){
+    if(!candles.length) return;
+    const input = document.getElementById('gotoInput');
+    input.min = toDatetimeLocalStr(candles[0].t);
+    input.max = toDatetimeLocalStr(candles[candles.length-1].t);
+    if(!input.value) input.value = toDatetimeLocalStr(candles[candles.length-1].t);
+    document.getElementById('gotoGroup').style.display = 'flex';
+  }
+
+  function jumpToDatetime(){
+    if(!candles.length) return;
+    const input = document.getElementById('gotoInput');
+    const val = input.value; // "YYYY-MM-DDTHH:MM"
+    if(!val) return;
+    const ms = Date.parse(val+':00Z');
+    if(!isFinite(ms)) return;
+    const idx = nearestIndexForTime(ms);
+    if(idx === null) return;
+    viewStart = idx - viewCount/2;
+    viewStart = Math.max(-viewCount*0.4, Math.min(candles.length-viewCount*0.6, viewStart));
+    draw();
+  }
+
+  document.getElementById('gotoBtn').addEventListener('click', jumpToDatetime);
+  document.getElementById('gotoInput').addEventListener('keydown', e=>{
+    if(e.key==='Enter') jumpToDatetime();
+  });
+
+  //================= INIT =================
+  resize();
+})();
+</script>
+</body>
+</html>
