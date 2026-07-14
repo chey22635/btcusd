@@ -352,8 +352,19 @@
     return step*mag;
   }
 
+  // function fmtTime(ms){
+  //   const d = new Date(ms);
+  //   const pad = n=>String(n).padStart(2,'0');
+  //   return {
+  //     date: `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}`,
+  //     time: `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
+  //   };
+  // }
+
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
   function fmtTime(ms){
-    const d = new Date(ms);
+    const d = new Date(ms + IST_OFFSET_MS);
     const pad = n=>String(n).padStart(2,'0');
     return {
       date: `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}`,
@@ -618,8 +629,14 @@
   }
 
   //================= GO TO DATE/TIME =================
+  // function toDatetimeLocalStr(ms){
+  //   const d = new Date(ms);
+  //   const pad = n=>String(n).padStart(2,'0');
+  //   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  // }
+
   function toDatetimeLocalStr(ms){
-    const d = new Date(ms);
+    const d = new Date(ms + IST_OFFSET_MS);
     const pad = n=>String(n).padStart(2,'0');
     return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
   }
@@ -638,7 +655,8 @@
     const input = document.getElementById('gotoInput');
     const val = input.value; // "YYYY-MM-DDTHH:MM"
     if(!val) return;
-    const ms = Date.parse(val+':00Z');
+    // const ms = Date.parse(val+':00Z');
+    const ms = Date.parse(val+':00Z') - IST_OFFSET_MS;
     if(!isFinite(ms)) return;
     const idx = nearestIndexForTime(ms);
     if(idx === null) return;
